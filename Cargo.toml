@@ -1,0 +1,31 @@
+[package]
+name = "kwork-parser"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Memory-efficient Kwork to Telegram monitor for tiny VPS"
+license = "MIT"
+repository = "https://github.com/sabraman/kwork-parser"
+publish = false
+
+[dependencies]
+frankenstein = { version = "0.50", default-features = false, features = ["client-ureq"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+dotenvy = "0.15"
+log = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"
+panic = "abort"
+
+[profile.dev]
+opt-level = 0

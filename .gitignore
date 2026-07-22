@@ -1,0 +1,15 @@
+/target/
+.env
+.env.*
+!.env.example
+*.log
+*.db
+*.db-*
+*.redb
+kwork-state.json
+.kwork-token*.json
+.kwork_token*.json
+cookies.json
+state.json
+*.tmp-*
+.DS_Store
