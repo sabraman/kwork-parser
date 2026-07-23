@@ -134,7 +134,7 @@ file_description=$(file -b "$artifact")
 printf '%s\n' "$file_description" | grep -Fq 'ELF 64-bit' || fail 'artifact is not a 64-bit ELF executable'
 printf '%s\n' "$file_description" | grep -Fq 'x86-64' || fail 'artifact is not built for x86-64'
 printf '%s\n' "$file_description" | grep -Fq 'executable' || fail 'artifact is not executable code'
-printf '%s\n' "$file_description" | grep -Fq 'statically linked' || fail 'artifact is not statically linked'
+printf '%s\n' "$file_description" | grep -Eq '(statically|static-pie) linked' || fail 'artifact is not statically linked'
 
 if [ -f "$install_path" ]; then
     install_executable "$install_path" "${previous_path}.new"
