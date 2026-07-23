@@ -145,7 +145,56 @@ swapping means the VPS is undersized or a response/state bound has regressed.
 No domain, reverse proxy, certificate, firewall opening, or Telegram webhook is
 needed. The service only makes outbound HTTPS requests.
 
-### Upgrade and rollback
+### Automatic GitHub deployment
+
+Every successful push to `main` builds a static x86-64 Linux binary and deploys
+it through the GitHub `production` environment. Formatting, tests, clippy, the
+Rust 1.88 compatibility test, and the release build must all pass first.
+
+Bootstrap a dedicated deployment account once on the VPS:
+
+```bash
+sudo apt-get update
+sudo apt-get install --yes file
+sudo useradd --system --create-home --home-dir /var/lib/kwork-deploy --shell /bin/bash kwork-deploy
+sudo install -d -o kwork-deploy -g kwork-deploy -m 0700 /var/lib/kwork-deploy/uploads
+sudo install -o root -g root -m 0755 deploy/deploy-kwork-parser /usr/local/sbin/deploy-kwork-parser
+sudo visudo -cf deploy/kwork-parser.sudoers
+sudo install -o root -g root -m 0440 deploy/kwork-parser.sudoers /etc/sudoers.d/kwork-parser-deploy
+sudo install -d -o kwork-deploy -g kwork-deploy -m 0700 /var/lib/kwork-deploy/.ssh
+```
+
+Create a dedicated Ed25519 key locally. Put its public key in
+`/var/lib/kwork-deploy/.ssh/authorized_keys` with the key options
+`restrict`, and set that file to owner `kwork-deploy:kwork-deploy`, mode `0600`.
+Do not reuse a personal or root SSH key.
+
+Configure the GitHub environment named `production`:
+
+| Type | Name | Value |
+| --- | --- | --- |
+| Variable | `VPS_HOST` | VPS hostname or address |
+| Variable | `VPS_PORT` | SSH port |
+| Variable | `VPS_USER` | `kwork-deploy` |
+| Secret | `VPS_SSH_KEY` | Dedicated private key |
+| Secret | `VPS_KNOWN_HOSTS` | Pinned `ssh-keyscan` output for the VPS and port |
+
+The deployment account can upload only to its own state directory. Its sudo
+rule permits only the root-owned deployment script, which independently checks
+the staging path, ownership, checksum, commit ID, and executable format.
+Application credentials never leave `/etc/kwork-parser.env`.
+
+The installer preserves `/usr/local/bin/kwork-parser.previous`, replaces the
+binary atomically, and watches systemd for 20 seconds. It automatically restores
+the previous binary if the new process exits or restarts during that window.
+Production deployments are serialized; an in-progress deployment is never
+cancelled by a newer commit.
+
+Rotate access by creating a new key, replacing `authorized_keys`, updating the
+`VPS_SSH_KEY` environment secret, and verifying one deployment before deleting
+the old private key.
+
+### Manual upgrade and rollback
 
 ```bash
 sudo systemctl stop kwork-parser

@@ -150,7 +150,9 @@ pub fn local_hour() -> u8 {
     #[cfg(unix)]
     {
         unsafe {
-            let t = secs as libc::time_t;
+            let Ok(t) = secs.try_into() else {
+                return ((secs / 3600) % 24) as u8;
+            };
             let tm = libc::localtime(&t);
             if !tm.is_null() {
                 return (*tm).tm_hour as u8;

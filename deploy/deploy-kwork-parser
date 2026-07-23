@@ -1,0 +1,166 @@
+#!/bin/sh
+set -eu
+
+fail() {
+    printf 'deploy error: %s\n' "$*" >&2
+    exit 1
+}
+
+if [ "$(/usr/bin/id -u)" -eq 0 ]; then
+    upload_root=/var/lib/kwork-deploy/uploads
+    verified_root=/var/lib/kwork-deploy-verified
+    install_path=/usr/local/bin/kwork-parser
+    expected_owner=kwork-deploy
+    test_mode=false
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin
+    export PATH
+else
+    [ -n "${KWORK_DEPLOY_TEST_ROOT:-}" ] || fail 'this script must run as root'
+    case "$KWORK_DEPLOY_TEST_ROOT" in
+        /*) ;;
+        *) fail 'test root must be an absolute path' ;;
+    esac
+    upload_root="$KWORK_DEPLOY_TEST_ROOT/uploads"
+    verified_root="$KWORK_DEPLOY_TEST_ROOT/verified"
+    install_path="$KWORK_DEPLOY_TEST_ROOT/bin/kwork-parser"
+    expected_owner=$(/usr/bin/id -un)
+    test_mode=true
+fi
+
+readonly upload_root verified_root install_path expected_owner test_mode
+readonly previous_path="${install_path}.previous"
+readonly service_name=kwork-parser.service
+readonly commit_path="$verified_root/deployed-commit"
+
+install_executable() {
+    source_path=$1
+    destination_path=$2
+    if [ "$test_mode" = true ]; then
+        install -m 0755 "$source_path" "$destination_path"
+    else
+        install -o root -g root -m 0755 "$source_path" "$destination_path"
+    fi
+}
+
+is_healthy() {
+    expected_restarts=$1
+    attempts=0
+
+    while [ "$attempts" -lt 10 ]; do
+        sleep 2
+
+        if ! systemctl is-active --quiet "$service_name"; then
+            return 1
+        fi
+
+        current_restarts=$(systemctl show "$service_name" -p NRestarts --value)
+        if [ "$current_restarts" != "$expected_restarts" ]; then
+            return 1
+        fi
+
+        attempts=$((attempts + 1))
+    done
+}
+
+rollback() {
+    if [ ! -f "$previous_path" ]; then
+        printf '%s\n' 'deploy error: no previous binary is available for rollback' >&2
+        return 1
+    fi
+
+    install_executable "$previous_path" "${install_path}.rollback"
+    mv -f "${install_path}.rollback" "$install_path"
+    systemctl restart "$service_name"
+    rollback_restarts=$(systemctl show "$service_name" -p NRestarts --value)
+
+    if ! is_healthy "$rollback_restarts"; then
+        printf '%s\n' 'deploy error: rollback binary did not remain healthy' >&2
+        return 1
+    fi
+
+    printf '%s\n' 'Rollback completed successfully.' >&2
+}
+
+[ "$#" -eq 1 ] || fail 'expected exactly one staging-directory argument'
+
+requested_stage=$1
+stage_name=${requested_stage#"$upload_root"/}
+case "$requested_stage" in
+    "$upload_root"/*) ;;
+    *) fail 'staging directory is outside the upload root' ;;
+esac
+printf '%s\n' "$stage_name" | grep -Eq '^[0-9a-f]{40}$' || fail 'invalid staging-directory name'
+
+install -m 0700 -d "$verified_root"
+stage="$verified_root/$stage_name"
+[ ! -e "$stage" ] || fail 'verified staging directory already exists'
+install -m 0700 -d "$stage"
+
+cleanup() {
+    rm -rf -- "$stage"
+}
+trap cleanup EXIT
+
+[ ! -L "$requested_stage" ] || fail 'staging directory may not be a symlink'
+[ -d "$requested_stage" ] || fail 'staging path is not a directory'
+[ "$(stat -c '%U' "$requested_stage")" = "$expected_owner" ] || fail 'unexpected staging-directory owner'
+
+artifact="$stage/kwork-parser"
+checksum="$stage/kwork-parser.sha256"
+commit_file="$stage/commit"
+
+for file_name in kwork-parser kwork-parser.sha256 commit; do
+    source_file="$requested_stage/$file_name"
+    protected_file="$stage/$file_name"
+    [ -f "$source_file" ] || fail "missing regular file: $file_name"
+    [ ! -L "$source_file" ] || fail "symlinks are not accepted: $file_name"
+    [ "$(stat -c '%U' "$source_file")" = "$expected_owner" ] || fail "unexpected file owner: $file_name"
+    cp --no-dereference -- "$source_file" "$protected_file"
+    [ ! -L "$protected_file" ] || fail "copied file is a symlink: $file_name"
+    chmod 0600 "$protected_file"
+done
+
+[ "$(wc -c < "$checksum")" -eq 79 ] || fail 'invalid checksum-file length'
+expected_checksum=$(sed -n 's/^\([0-9a-f]\{64\}\)  kwork-parser$/\1/p' "$checksum")
+[ "${#expected_checksum}" -eq 64 ] || fail 'invalid checksum-file format'
+actual_checksum=$(sha256sum "$artifact" | cut -d ' ' -f 1)
+[ "$actual_checksum" = "$expected_checksum" ] || fail 'artifact checksum verification failed'
+
+commit=$(tr -d '\n' < "$commit_file")
+printf '%s\n' "$commit" | grep -Eq '^[0-9a-f]{40}$' || fail 'invalid commit identifier'
+[ "$commit" = "$stage_name" ] || fail 'commit identifier does not match staging directory'
+
+file_description=$(file -b "$artifact")
+printf '%s\n' "$file_description" | grep -Fq 'ELF 64-bit' || fail 'artifact is not a 64-bit ELF executable'
+printf '%s\n' "$file_description" | grep -Fq 'x86-64' || fail 'artifact is not built for x86-64'
+printf '%s\n' "$file_description" | grep -Fq 'executable' || fail 'artifact is not executable code'
+printf '%s\n' "$file_description" | grep -Fq 'statically linked' || fail 'artifact is not statically linked'
+
+if [ -f "$install_path" ]; then
+    install_executable "$install_path" "${previous_path}.new"
+    mv -f "${previous_path}.new" "$previous_path"
+fi
+
+install_executable "$artifact" "${install_path}.new"
+mv -f "${install_path}.new" "$install_path"
+
+if ! systemctl restart "$service_name"; then
+    rollback || true
+    fail 'service restart failed; rollback attempted'
+fi
+
+expected_restarts=$(systemctl show "$service_name" -p NRestarts --value)
+if ! is_healthy "$expected_restarts"; then
+    rollback || true
+    fail 'service failed its health window; rollback attempted'
+fi
+
+printf '%s\n' "$commit" > "${commit_path}.new"
+if [ "$test_mode" = false ]; then
+    chown root:root "${commit_path}.new"
+fi
+chmod 0644 "${commit_path}.new"
+mv -f "${commit_path}.new" "$commit_path"
+
+printf 'Deployed commit: %s\n' "$commit"
+systemctl show "$service_name" -p ActiveState -p SubState -p NRestarts -p MemoryCurrent -p TasksCurrent

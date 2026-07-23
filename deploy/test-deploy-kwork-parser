@@ -1,0 +1,98 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
+deploy_script="$script_dir/deploy-kwork-parser"
+test_root=$(mktemp -d)
+trap 'rm -rf -- "$test_root"' EXIT
+
+mkdir -p "$test_root/bin" "$test_root/uploads" "$test_root/mocks"
+
+printf '%s\n' '#!/bin/sh' "printf '%s\\n' 'ELF 64-bit LSB executable, x86-64, statically linked'" > "$test_root/mocks/file"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$test_root/mocks/sleep"
+# The single-quoted strings below generate a script; expansion must happen when
+# that generated mock runs, not while this test creates it.
+# shellcheck disable=SC2016
+printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'state="$KWORK_DEPLOY_TEST_ROOT/restarts"' \
+    'count=$(cat "$state" 2>/dev/null || printf 0)' \
+    'case "$1" in' \
+    '    restart)' \
+    '        count=$((count + 1))' \
+    '        printf "%s\\n" "$count" > "$state"' \
+    '        ;;' \
+    '    is-active)' \
+    '        if [ "${KWORK_DEPLOY_FAIL_FIRST:-0}" = 1 ] && [ "$count" -eq 1 ]; then exit 1; fi' \
+    '        ;;' \
+    '    show)' \
+    '        case "$*" in' \
+    '            *NRestarts*--value*) printf "%s\\n" "$count" ;;' \
+    '            *) printf "ActiveState=active\\nSubState=running\\nNRestarts=%s\\nMemoryCurrent=1\\nTasksCurrent=1\\n" "$count" ;;' \
+    '        esac' \
+    '        ;;' \
+    '    *) exit 1 ;;' \
+    'esac' > "$test_root/mocks/systemctl"
+chmod 0755 "$test_root/mocks/file" "$test_root/mocks/sleep" "$test_root/mocks/systemctl"
+
+test_path="$test_root/mocks:$PATH"
+
+make_stage() {
+    commit=$1
+    content=$2
+    stage="$test_root/uploads/$commit"
+    mkdir -p "$stage"
+    printf '%s\n' "$content" > "$stage/kwork-parser"
+    (
+        cd "$stage"
+        sha256sum kwork-parser > kwork-parser.sha256
+    )
+    printf '%s\n' "$commit" > "$stage/commit"
+}
+
+run_deploy() {
+    KWORK_DEPLOY_TEST_ROOT="$test_root" PATH="$test_path" "$deploy_script" "$1"
+}
+
+assert_content() {
+    expected=$1
+    actual=$(cat "$test_root/bin/kwork-parser")
+    [ "$actual" = "$expected" ] || {
+        printf 'expected installed content %s, got %s\n' "$expected" "$actual" >&2
+        exit 1
+    }
+}
+
+printf '%s\n' 'old-binary' > "$test_root/bin/kwork-parser"
+chmod 0755 "$test_root/bin/kwork-parser"
+
+commit_one=1111111111111111111111111111111111111111
+make_stage "$commit_one" 'new-binary-one'
+run_deploy "$test_root/uploads/$commit_one" >/dev/null
+assert_content 'new-binary-one'
+
+commit_two=2222222222222222222222222222222222222222
+make_stage "$commit_two" 'new-binary-two'
+printf '%064d  kwork-parser\n%064d  /dev/zero' 0 0 > "$test_root/uploads/$commit_two/kwork-parser.sha256"
+if run_deploy "$test_root/uploads/$commit_two" >/dev/null 2>&1; then
+    printf '%s\n' 'malformed checksum manifest was accepted' >&2
+    exit 1
+fi
+assert_content 'new-binary-one'
+
+commit_three=3333333333333333333333333333333333333333
+make_stage "$commit_three" 'new-binary-three'
+printf '%s\n' 0 > "$test_root/restarts"
+if KWORK_DEPLOY_FAIL_FIRST=1 run_deploy "$test_root/uploads/$commit_three" >/dev/null 2>&1; then
+    printf '%s\n' 'unhealthy deployment unexpectedly succeeded' >&2
+    exit 1
+fi
+assert_content 'new-binary-one'
+
+if run_deploy "$test_root/outside" >/dev/null 2>&1; then
+    printf '%s\n' 'invalid staging path was accepted' >&2
+    exit 1
+fi
+
+printf '%s\n' 'deployment script tests passed'
