@@ -152,7 +152,7 @@ pub fn build_digest(api: &mut KworkApi, state: &StateStore) -> Result<String, Ap
     let connects = api
         .get_connects()
         .map(|(active, all)| format!("{active} / {all}"))
-        .unwrap_or_else(|_| "unavailable".into());
+        .unwrap_or_else(|_| "недоступно".into());
     let kwork_part = build_summary(state);
 
     Ok(format!(

@@ -2,6 +2,7 @@ mod bot;
 mod config;
 mod kwork;
 mod state;
+mod text;
 mod util;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +16,7 @@ use kwork::{
     build_digest, build_summary, check_inbox, check_orders, check_stats, ApiError, KworkApi,
 };
 use state::StateStore;
-use util::format_ago;
+use text::{bool_ru, format_ago, job_label, russian_count, COMMAND_HELP};
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 static LOGGER: SimpleLogger = SimpleLogger;
@@ -40,7 +41,8 @@ fn main() {
     ) {
         Ok(api) => Some(api),
         Err(error) => {
-            telegram.send_notification(&format!("⚠️ Kwork startup authentication failed: {error}"));
+            telegram
+                .send_notification(&format!("⚠️ Ошибка авторизации Kwork при запуске: {error}"));
             error!("Initial Kwork connection failed: {error}");
             state.touch_error(&format!("startup: {error}"));
             save_or_log(&mut state);
@@ -49,12 +51,12 @@ fn main() {
     };
 
     telegram.send_notification(&format!(
-        "✅ Kwork Parser started\n\
-         📩 inbox: adaptive {}–{} min (base {})\n\
-         📊 stats: every {} min\n\
-         📦 orders: every {} min\n\
-         📋 digest: every {} h\n\
-         Commands: /stats /inbox /orders /summary /status /start",
+        "✅ Kwork Parser запущен\n\
+         📩 входящие: адаптивно {}–{} мин. (база {})\n\
+         📊 статистика: каждые {} мин.\n\
+         📦 заказы: каждые {} мин.\n\
+         📋 дайджест: каждые {} ч.\n\
+         Команды: /stats /inbox /orders /summary /status /start",
         config.message_check_min.as_secs() / 60,
         config.message_check_max.as_secs() / 60,
         config.message_check_interval.as_secs() / 60,
@@ -107,7 +109,7 @@ fn main() {
                         run_initial_jobs(&mut connected, &mut state, &mut telegram, &config);
                     if connection_valid {
                         info!("Kwork connection restored");
-                        telegram.send_notification("✅ Kwork connection restored.");
+                        telegram.send_notification("✅ Соединение с Kwork восстановлено.");
                         next_digest = Instant::now()
                             + if digest_delivered {
                                 config.summary_interval
@@ -241,50 +243,54 @@ fn handle_command(
     config: &Config,
 ) {
     if matches!(command, "inbox" | "orders" | "stats") && api.is_none() {
-        telegram.send_notification("⚠️ Kwork is disconnected; retrying in the background.");
+        telegram.send_notification("⚠️ Kwork отключён; повторное подключение выполняется в фоне.");
         return;
     }
     match command {
         "start" => {
-            telegram.send_notification(
-                "👋 Kwork Parser\n\n\
-                 /inbox — check messages now\n\
-                 /stats — refresh kwork views/orders\n\
-                 /orders — check orders now\n\
-                 /summary — latest saved kwork summary\n\
-                 /status — health and last runs",
-            );
+            telegram.send_notification(COMMAND_HELP);
         }
         "inbox" => {
-            telegram.send_notification("⏳ Checking inbox…");
+            telegram.send_notification("⏳ Проверяю входящие сообщения…");
             match check_inbox(api.expect("checked above"), state, |text| {
                 telegram.send_notification(text)
             }) {
                 Ok(0) => {
-                    telegram.send_notification("✅ No new unread messages.");
+                    telegram.send_notification("✅ Новых непрочитанных сообщений нет.");
                 }
                 Ok(count) => {
-                    telegram.send_notification(&format!("✅ Sent {count} notification(s)."));
+                    telegram.send_notification(&format!(
+                        "✅ Отправлено: {}.",
+                        russian_count(count, "уведомление", "уведомления", "уведомлений")
+                    ));
                 }
                 Err(error) => command_error(state, telegram, "inbox", &error),
             }
         }
         "orders" => {
-            telegram.send_notification("⏳ Checking orders…");
+            telegram.send_notification("⏳ Проверяю заказы…");
             match check_orders(api.expect("checked above"), state, |text| {
                 telegram.send_notification(text)
             }) {
                 Ok(0) => {
-                    telegram.send_notification("✅ No order changes.");
+                    telegram.send_notification("✅ Изменений в заказах нет.");
                 }
                 Ok(count) => {
-                    telegram.send_notification(&format!("✅ {count} order event(s)."));
+                    telegram.send_notification(&format!(
+                        "✅ {}.",
+                        russian_count(
+                            count,
+                            "изменение заказа",
+                            "изменения заказа",
+                            "изменений заказов"
+                        )
+                    ));
                 }
                 Err(error) => command_error(state, telegram, "orders", &error),
             }
         }
         "stats" => {
-            telegram.send_notification("⏳ Fetching kwork stats…");
+            telegram.send_notification("⏳ Загружаю статистику Kwork…");
             match check_stats(api.expect("checked above"), state, |text| {
                 telegram.send_notification(text)
             }) {
@@ -314,28 +320,28 @@ fn status_text(
         state
             .last_ok(job)
             .map(format_ago)
-            .unwrap_or_else(|| "never".into())
+            .unwrap_or_else(|| "никогда".into())
     };
     let error = state
         .last_error()
         .map(|record| record.message.as_str())
         .unwrap_or("—");
     let token_ttl = api
-        .map(|api| format!("~{}h", api.token_expires_in_secs().max(0) / 3_600))
-        .unwrap_or_else(|| "disconnected".into());
+        .map(|api| format!("~{} ч.", api.token_expires_in_secs().max(0) / 3_600))
+        .unwrap_or_else(|| "нет подключения".into());
     format!(
-        "🩺 Status\n\
-         admin chat: {}\n\
-         quiet hours now: {}\n\
-         token TTL: {token_ttl}\n\
-         state: {}\n\
-         last inbox: {}\n\
-         last stats: {}\n\
-         last orders: {}\n\
-         last digest: {}\n\
-         last error: {error}",
+        "🩺 Состояние\n\
+         чат администратора: {}\n\
+         тихие часы сейчас: {}\n\
+         срок действия токена: {token_ttl}\n\
+         файл состояния: {}\n\
+         входящие: {}\n\
+         статистика: {}\n\
+         заказы: {}\n\
+         дайджест: {}\n\
+         последняя ошибка: {error}",
         telegram.admin_id(),
-        in_quiet_hours(config.quiet_start, config.quiet_end),
+        bool_ru(in_quiet_hours(config.quiet_start, config.quiet_end)),
         state.path().display(),
         last("inbox"),
         last("stats"),
@@ -421,7 +427,8 @@ fn next_reconnect_delay(current: Duration) -> Duration {
 
 fn command_error(state: &mut StateStore, telegram: &mut TgBot, job: &str, error: &ApiError) {
     on_error(state, telegram, job, error);
-    telegram.send_notification(&format!("⚠️ {job}: {error}"));
+    let label = job_label(job);
+    telegram.send_notification(&format!("⚠️ Ошибка ({label}): {error}"));
 }
 
 fn on_error(state: &mut StateStore, telegram: &mut TgBot, job: &str, error: &ApiError) -> bool {
@@ -429,7 +436,8 @@ fn on_error(state: &mut StateStore, telegram: &mut TgBot, job: &str, error: &Api
     state.touch_error(&format!("{job}: {error}"));
     save_or_log(state);
     if matches!(error, ApiError::Auth(_)) {
-        telegram.send_notification(&format!("⚠️ Kwork authentication failed ({job}): {error}"));
+        let label = job_label(job);
+        telegram.send_notification(&format!("⚠️ Ошибка авторизации Kwork ({label}): {error}"));
     }
     matches!(error, ApiError::Auth(_) | ApiError::Http(_))
 }
@@ -595,5 +603,21 @@ mod tests {
             next_reconnect_delay(Duration::from_secs(200)),
             Duration::from_secs(300)
         );
+    }
+
+    #[test]
+    fn status_text_is_russian_when_disconnected() {
+        let state = StateStore::load(format!(
+            "/tmp/kwork-parser-localization-test-state-{}.json",
+            std::process::id()
+        ))
+        .unwrap();
+        let telegram = TgBot::new("token", 1);
+        let text = status_text(None, &state, &telegram, &config());
+        assert!(text.contains("🩺 Состояние"));
+        assert!(text.contains("нет подключения"));
+        assert!(text.contains("никогда"));
+        assert!(!text.contains("admin chat"));
+        assert!(!text.contains("disconnected"));
     }
 }
