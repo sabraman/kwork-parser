@@ -1,4 +1,4 @@
-pub const COMMAND_HELP: &str = "👋 Kwork Parser\n\n\
+pub const COMMAND_HELP: &str = "👋 Парсер Kwork\n\n\
      /inbox — проверить сообщения\n\
      /stats — обновить просмотры и заказы кворков\n\
      /orders — проверить заказы\n\
