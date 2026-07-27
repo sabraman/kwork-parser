@@ -52,10 +52,10 @@ fn main() {
 
     telegram.send_notification(&format!(
         "✅ Kwork Parser запущен\n\
-         📩 входящие: адаптивно {}–{} мин. (база {})\n\
-         📊 статистика: каждые {} мин.\n\
-         📦 заказы: каждые {} мин.\n\
-         📋 дайджест: каждые {} ч.\n\
+         📩 входящие: адаптивный интервал {}–{} мин. (база {} мин.)\n\
+         📊 статистика: интервал {} мин.\n\
+         📦 заказы: интервал {} мин.\n\
+         📋 дайджест: интервал {} ч.\n\
          Команды: /stats /inbox /orders /summary /status /start",
         config.message_check_min.as_secs() / 60,
         config.message_check_max.as_secs() / 60,

@@ -1,6 +1,7 @@
 use log::{info, warn};
 
 use crate::state::StateStore;
+use crate::text::russian_count;
 
 use super::api::{ApiError, KworkApi};
 
@@ -140,9 +141,9 @@ pub fn build_summary(state: &StateStore) -> String {
         ));
     }
     lines.push(String::new());
+    let kwork_count = russian_count(rows.len(), "кворк", "кворка", "кворков");
     lines.push(format!(
-        "Итого: {} кворков, 👁 {total_views}, 📦 {total_orders}",
-        rows.len()
+        "Итого: {kwork_count}, 👁 {total_views}, 📦 {total_orders}"
     ));
     lines.join("\n")
 }
@@ -154,16 +155,40 @@ pub fn build_digest(api: &mut KworkApi, state: &StateStore) -> Result<String, Ap
         .map(|(active, all)| format!("{active} / {all}"))
         .unwrap_or_else(|_| "недоступно".into());
     let kwork_part = build_summary(state);
+    let completed_orders = russian_count(
+        actor.completed_orders_count.max(0) as usize,
+        "заказ выполнен",
+        "заказа выполнено",
+        "заказов выполнено",
+    );
+    let unread_dialogs = russian_count(
+        actor.unread_dialog_count.max(0) as usize,
+        "диалог",
+        "диалога",
+        "диалогов",
+    );
+    let unread_messages = russian_count(
+        actor.unread_messages_count.max(0) as usize,
+        "сообщение",
+        "сообщения",
+        "сообщений",
+    );
+    let kwork_count = russian_count(
+        actor.kworks_count.max(0) as usize,
+        "кворк",
+        "кворка",
+        "кворков",
+    );
 
     Ok(format!(
         "📋 Дайджест Kwork\n\
          @{}\n\
          💰 Баланс: {:.0}₽ (холд {:.0}₽)\n\
          ⭐ Рейтинг: {:.2} (+{} / −{})\n\
-         📦 Заказов выполнено: {}\n\
+         📦 {completed_orders}\n\
          🔗 Коннекты: {connects}\n\
-         📩 Непрочитано: {} диал. / {} сообщ.\n\
-         🛍 Кворков: {}\n\n\
+         📩 Непрочитано: {unread_dialogs} / {unread_messages}\n\
+         🛍 Кворков: {kwork_count}\n\n\
          {}",
         actor.username,
         actor.free_amount,
@@ -171,10 +196,6 @@ pub fn build_digest(api: &mut KworkApi, state: &StateStore) -> Result<String, Ap
         actor.rating,
         actor.good_reviews,
         actor.bad_reviews,
-        actor.completed_orders_count,
-        actor.unread_dialog_count,
-        actor.unread_messages_count,
-        actor.kworks_count,
         kwork_part
     ))
 }
@@ -201,5 +222,21 @@ mod tests {
         );
         assert_eq!(classify_stat(Some(&previous), 9, 1), StatChange::None);
         assert_eq!(classify_stat(None, 1, 0), StatChange::New);
+    }
+
+    #[test]
+    fn summary_uses_russian_kwork_count_forms() {
+        for (count, expected) in [(1, "1 кворк"), (2, "2 кворка"), (5, "5 кворков")]
+        {
+            let mut state = StateStore::load(format!(
+                "/tmp/kwork-summary-count-test-{}-{count}.json",
+                std::process::id()
+            ))
+            .unwrap();
+            for id in 0..count {
+                state.set_kwork(id, format!("Kwork {id}"), 0, 0);
+            }
+            assert!(build_summary(&state).contains(expected));
+        }
     }
 }

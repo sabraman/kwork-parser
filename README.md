@@ -28,6 +28,10 @@ on a 128 MB VPS.
 - Atomic, owner-only state and Kwork-token files
 - Background Kwork reconnection with exponential backoff up to five minutes
 
+The administrator-facing Telegram interface is Russian; command names remain
+`/start`, `/inbox`, `/orders`, `/stats`, `/summary`, and `/status`. Technical
+service logs and CLI diagnostics remain English for easier VPS maintenance.
+
 ## Requirements
 
 - A Telegram bot created with [@BotFather](https://t.me/BotFather)
